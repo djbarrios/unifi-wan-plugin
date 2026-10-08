@@ -8,8 +8,8 @@ import "Model.js" as Model
 
 Panel {
   id: root
-  moduleName: "dbarrios.unifi-wan"
-  ipcTarget: "dbarrios.unifi-wan"
+  moduleName: "io.github.djbarrios.unifi-wan"
+  ipcTarget: "io.github.djbarrios.unifi-wan"
 
   readonly property int windowMs: 60000
 

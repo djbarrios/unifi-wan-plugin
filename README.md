@@ -4,7 +4,7 @@ An [Omarchy](https://omarchy.org) shell bar widget that shows your internet
 connection as seen by a UniFi gateway (Dream Router, Dream Machine, Cloud
 Gateway, …).
 
-![UniFi WAN panel with a 60-second throughput graph](screenshot.png)
+![UniFi WAN panel with a 60-second throughput graph](preview.png)
 
 - **Bar:** a globe icon, green while an ISP link is up and red when every WAN
   is down, followed by live download/upload throughput (`↓412M ↑38M`).
@@ -34,7 +34,8 @@ the tooltip and panel.
   widget shows a dimmed icon and *Not on your UniFi network*, sends nothing,
   and checks again every 30 seconds. Don't run `--repin` on someone else's
   network.
-- To remove the widget completely: `omarchy plugin disable dbarrios.unifi-wan`.
+- To hide the widget without uninstalling it:
+  `omarchy plugin disable io.github.djbarrios.unifi-wan`.
 
 ## Requirements
 
@@ -51,7 +52,7 @@ the tooltip and panel.
 omarchy plugin add https://github.com/djbarrios/unifi-wan-plugin --enable
 ```
 
-Update later with `omarchy plugin update dbarrios.unifi-wan`.
+Update later with `omarchy plugin update io.github.djbarrios.unifi-wan`.
 
 ## Setup
 
@@ -110,7 +111,7 @@ not set up or not reachable, the widget falls back to the API figures.
 To check the setup from a terminal, run the data script directly:
 
 ```bash
-~/.config/omarchy/plugins/dbarrios.unifi-wan/unifi-wan-status | jq
+~/.config/omarchy/plugins/io.github.djbarrios.unifi-wan/unifi-wan-status | jq
 ```
 
 ## Security
@@ -134,8 +135,27 @@ auto-detected address, that you're not on your UniFi network). While on your
 own network, re-pin with:
 
 ```bash
-~/.config/omarchy/plugins/dbarrios.unifi-wan/unifi-wan-status --repin
+~/.config/omarchy/plugins/io.github.djbarrios.unifi-wan/unifi-wan-status --repin
 ```
+
+## Uninstall
+
+```bash
+omarchy plugin remove io.github.djbarrios.unifi-wan
+```
+
+That removes the plugin and its bar entry. The plugin also keeps settings and
+secrets outside its folder; remove them too if you're done with it:
+
+```bash
+rm -rf ~/.config/unifi-wan                       # host, site, TLS pin, SNMP user, pause flag
+secret-tool clear service unifi-wan              # API key
+secret-tool clear service unifi-wan-snmp         # SNMP password
+rm -rf "$XDG_RUNTIME_DIR/unifi-wan-$UID"         # SNMP counter cache
+```
+
+Finally, delete the API key in UniFi Network (*Settings → Control Plane →
+Integrations*) and turn SNMP off again if nothing else uses it.
 
 ## Notes
 
@@ -157,7 +177,7 @@ own network, re-pin with:
 | `BarWidget.qml` | Bar button and panel |
 | `Model.js` | Formatting and graph helpers |
 | `unifi-wan-status` | Queries the gateway (API and SNMP) and prints one JSON line |
-| `screenshot.png` | README screenshot |
+| `preview.png` | Screenshot for this README and the marketplace |
 
 ## License
 

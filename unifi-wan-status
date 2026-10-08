@@ -113,6 +113,9 @@ snmp_rates() {
   local user=$1 pass=$2 rt state cfg now names idx oids raw
   rt="${XDG_RUNTIME_DIR:-/tmp}/unifi-wan-$UID"
   mkdir -p -m 700 "$rt" || return 1
+  # Without XDG_RUNTIME_DIR this path is predictable in shared /tmp: only use a
+  # real directory that we own and nobody else can enter.
+  [[ ! -L $rt && -O $rt && $(stat -c %a "$rt") == 700 ]] || return 1
   state="$rt/snmp-$host.json"
   cfg=$(mktemp -d "$rt/snmp.XXXXXX") || return 1
   trap 'rm -rf "$cfg"' RETURN

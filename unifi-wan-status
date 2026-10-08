@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Prints one JSON line describing the UniFi gateway's WAN state.
+#
+# API key: GNOME Keyring / Secret Service entry "service=unifi-wan", stored with
+#            secret-tool store --label='UniFi WAN' service unifi-wan
+#          falling back to ~/.config/unifi-wan/api-key (chmod 600).
+# Config:  ~/.config/unifi-wan/host  (optional, defaults to the default gateway)
+#          ~/.config/unifi-wan/site  (optional, defaults to "default")
+#          ~/.config/unifi-wan/pin   (router TLS key pin, recorded on first contact)
+#
+# Run with --repin after the router's certificate legitimately changes.
+set -uo pipefail
+umask 077
+
+conf="${XDG_CONFIG_HOME:-$HOME/.config}/unifi-wan"
+
+for dep in curl jq openssl; do
+  command -v "$dep" >/dev/null || { printf '{"state":"error","error":"Missing dependency: %s"}\n' "$dep"; exit 0; }
+done
+
+out() { jq -cn "$@"; exit 0; }
+
+host=$( [[ -r $conf/host ]] && tr -d '[:space:]' < "$conf/host" || ip -4 route show default | awk '{print $3; exit}')
+site=$( [[ -r $conf/site ]] && tr -d '[:space:]' < "$conf/site" || echo default)
+[[ -n $host ]] || out '{state:"error", error:"No default gateway; set the router address in ~/.config/unifi-wan/host"}'
+
+# The API key is only ever sent to a LAN address: refuse public IPv4 hosts so a
+# wrong host setting or a non-UniFi gateway cannot receive it.
+if [[ $host =~ ^([0-9]+)\.([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+  a=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]}
+  (( a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) || (a == 169 && b == 254) )) \
+    || out --arg h "$host" '{state:"error", error:($h + " is not a private LAN address; refusing to send the API key")}'
+fi
+
+# sha256 pin of the router's TLS public key, in curl --pinnedpubkey form.
+fetch_pin() {
+  timeout 5 openssl s_client -connect "$host:443" -servername "$host" </dev/null 2>/dev/null \
+    | openssl x509 -pubkey -noout 2>/dev/null \
+    | openssl pkey -pubin -outform der 2>/dev/null \
+    | openssl dgst -sha256 -binary | base64
+}
+
+if [[ ${1:-} == --repin ]]; then
+  rm -f "$conf/pin"
+fi
+
+if [[ ! -s $conf/pin ]]; then
+  mkdir -p "$conf"
+  pin=$(fetch_pin)
+  # A failed handshake hashes empty input; reject that digest.
+  [[ ${#pin} -eq 44 && $pin != "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=" ]] \
+    || out --arg h "$host" '{state:"error", error:("Router unreachable at " + $h + " (no HTTPS response)")}'
+  printf 'sha256//%s\n' "$pin" > "$conf/pin"
+  [[ ${1:-} == --repin ]] && { echo "Pinned $host: sha256//$pin"; exit 0; }
+fi
+pin=$(tr -d '[:space:]' < "$conf/pin")
+
+key=$(secret-tool lookup service unifi-wan 2>/dev/null)
+[[ -z $key && -r $conf/api-key ]] && key=$(< "$conf/api-key")
+key=${key//[[:space:]]/}
+[[ -n $key ]] || out '{state:"error", error:"No API key: run secret-tool store --label=\"UniFi WAN\" service unifi-wan"}'
+
+# The key goes to curl on stdin (a --config file), never on its command line,
+# so it does not show up in the process list. -k only skips CA validation of
+# the router's self-signed certificate; the pinned public key is still enforced.
+api() {
+  printf 'header = "X-API-KEY: %s"\n' "$key" |
+    curl -sk --config - --pinnedpubkey "$pin" --max-time 4 -H "Accept: application/json" \
+      "https://$host/proxy/network/api/s/$site/$1"
+}
+
+health=$(api stat/health)
+case $? in
+  0) ;;
+  90) out --arg h "$host" '{state:"error", error:("TLS key of " + $h + " changed. If expected, run unifi-wan-status --repin")}' ;;
+  *) out --arg h "$host" '{state:"error", error:("Router unreachable at " + $h)}' ;;
+esac
+jq -e 'type == "object"' <<<"$health" >/dev/null 2>&1 \
+  || out --arg h "$host" '{state:"error", error:("No UniFi Network API at " + $h + "; set the router address in ~/.config/unifi-wan/host")}'
+devices=$(api stat/device)
+jq -e . <<<"$devices" >/dev/null 2>&1 || devices=null
+
+jq -cn --argjson health "$health" --argjson devices "$devices" --arg host "$host" --arg site "$site" '
+  def sub($n): ($health.data // [] | map(select(.subsystem == $n)) | first) // {};
+  def mbps: if . == null then null else (. * 8 / 1000 | round / 1000) end;
+  def wanport($w): if $w == null then null else
+    {up: ($w.up // false), speed: $w.speed, ip: $w.ip, name: ($w.name // null),
+     down: ($w["rx_bytes-r"] | mbps), upl: ($w["tx_bytes-r"] | mbps)} end;
+  if ($health.error.code // 0) == 401 or ($health.meta.msg // "") == "api.err.LoginRequired" then
+    {state: "error", error: "API key rejected; create a new one and store it again"}
+  elif ($health.meta.rc // "") != "ok" then
+    {state: "error", error: ($health.meta.msg // $health.error.message // "API error")}
+  else
+    (sub("wan")) as $wan | (sub("www")) as $www |
+    (($devices.data // []) | map(select(.type == "udm" or .type == "ugw" or .type == "uxg")) | first) as $gw |
+    {
+      state: (if $wan.status == "ok" and ($www.status // "ok") == "ok" then "up"
+              elif $wan.status == "ok" then "degraded" else "down" end),
+      host: $host,
+      site: $site,
+      isp: ($wan.isp_name // $wan.isp_organization // null),
+      wan_ip: ($wan.wan_ip // null),
+      gateway: ($gw.name // $gw.model // null),
+      down: ($wan["rx_bytes-r"] | mbps),
+      up: ($wan["tx_bytes-r"] | mbps),
+      latency: ($www.latency // null),
+      uptime: ($www.uptime // null),
+      test_down: ($www.xput_down // null),
+      test_up: ($www.xput_up // null),
+      test_ping: ($www.speedtest_ping // null),
+      test_at: ($www.speedtest_lastrun // null),
+      wans: ($gw // {} | to_entries
+             | map(select(.key | test("^wan[0-9]+$")))
+             | sort_by(.key | ltrimstr("wan") | tonumber)
+             | map(wanport(.value) + {port: (.key | ascii_upcase)}))
+    }
+  end' 2>/dev/null || out '{state:"error", error:"Unexpected API response"}'

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "dbarrios.unifi-wan",
+  "name": "UniFi WAN",
+  "version": "1.1.0",
+  "author": "djbarrios",
+  "description": "ISP status, WAN throughput graph and speed test results from a UniFi gateway",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "UniFi WAN",
+    "description": "ISP status, WAN throughput graph and speed test results from a UniFi gateway",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/djbarrios/unifi-wan-plugin"
+}

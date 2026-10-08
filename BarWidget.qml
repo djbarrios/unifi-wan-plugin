@@ -19,6 +19,9 @@ Panel {
   property bool refreshing: false
   property bool pauseBusy: false
   property bool refreshQueued: false
+  property var alertTracker: null
+  // "Down and recovery", "Down only" or "Off" (widget setting `alerts`).
+  readonly property string alertMode: root.setting("alerts", "Down and recovery")
   readonly property bool paused: status !== null && status.state === "paused"
   readonly property string script: Qt.resolvedUrl("unifi-wan-status").toString().replace("file://", "")
   readonly property color okColor: Model.themeColor(themeToml, "green") || "#4caf50"
@@ -46,6 +49,7 @@ Panel {
     // An idle widget has no fresh data; drop the old line rather than extend it.
     root.history = Model.isIdle(root.status) ? []
       : Model.pushSample(root.history, root.status, Date.now(), root.windowMs)
+    root.checkAlerts()
     if (root.refreshQueued) {
       root.refreshQueued = false
       Qt.callLater(root.refresh)
@@ -58,6 +62,22 @@ Panel {
     if (on) root.apply('{"state":"paused"}')
     pauseProc.command = [root.script, "--pause", on ? "on" : "off"]
     pauseProc.running = true
+  }
+
+  function checkAlerts() {
+    var result = Model.trackAlerts(root.alertTracker, root.status)
+    root.alertTracker = result.tracker
+    if (root.alertMode === "Off") return
+    for (var i = 0; i < result.events.length; i++) {
+      var e = result.events[i]
+      if (e.kind === "up" && root.alertMode !== "Down and recovery") continue
+      var args = ["omarchy-notification-send", "--app-name", "UniFi WAN",
+                  "-u", e.kind === "down" ? "critical" : "normal",
+                  "-g", e.kind === "down" ? "󰖪" : "󰖟", e.title, e.body]
+      if (root.status && root.status.host)
+        args = args.concat(["--exec", "xdg-open", "https://" + root.status.host + "/network/" + (root.status.site || "default") + "/dashboard"])
+      Quickshell.execDetached(args)
+    }
   }
 
   function openDashboard() {

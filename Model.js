@@ -126,6 +126,62 @@ function details(s) {
   return rows
 }
 
+// Outage alerts. Each watched link (every WAN port, plus overall internet
+// access) is "up" or "down"; a change only counts once two consecutive
+// readings agree, so a single odd sample never alerts. A port that is already
+// down when watching starts (an unused WAN2, say) is never reported; internet
+// access that is already down is.
+function trackAlerts(tracker, s) {
+  var next = { links: {} }
+  var prev = (tracker && tracker.links) || {}
+  var events = []
+  if (!s || isIdle(s) || s.state === "error") return { tracker: tracker || next, events: events }
+
+  var observed = { internet: s.state === "up" ? "up" : "down" }
+  var wans = s.wans || []
+  for (var i = 0; i < wans.length; i++) observed[wans[i].port] = wans[i].up ? "up" : "down"
+
+  var changed = []
+  for (var key in observed) {
+    var p = prev[key]
+    var value = observed[key]
+    if (!p) {
+      next.links[key] = { confirmed: value, pending: null }
+      if (key === "internet" && value === "down") changed.push({ key: key, value: value })
+    } else if (value === p.confirmed) {
+      next.links[key] = { confirmed: value, pending: null }
+    } else if (p.pending === value) {
+      next.links[key] = { confirmed: value, pending: null }
+      changed.push({ key: key, value: value })
+    } else {
+      next.links[key] = { confirmed: p.confirmed, pending: value }
+    }
+  }
+
+  var isp = s.isp || "your ISP"
+  var internet = changed.filter(function(c) { return c.key === "internet" })[0]
+  var ports = changed.filter(function(c) { return c.key !== "internet" })
+  if (internet && internet.value === "down") {
+    events.push({ kind: "down", title: "Internet down",
+      body: s.state === "down" ? "All WAN links are down (" + isp + ")."
+                               : "WAN link is up but " + isp + " is not reaching the internet." })
+  } else if (internet) {
+    events.push({ kind: "up", title: "Internet back", body: isp + " is reachable again." })
+  }
+  // Port changes while internet access holds (failover) get their own notice;
+  // during a full outage the internet alert already says it all.
+  for (var j = 0; j < ports.length; j++) {
+    if (internet && internet.value === "down" && ports[j].value === "down") continue
+    if (internet && internet.value === "up" && ports[j].value === "up") continue
+    var others = wans.filter(function(w) { return w.port !== ports[j].key && w.up })
+    events.push(ports[j].value === "down"
+      ? { kind: "down", title: ports[j].key + " down",
+          body: others.length ? "Running on " + others.map(function(w) { return w.port }).join(", ") + "." : "No other WAN link is up." }
+      : { kind: "up", title: ports[j].key + " back up", body: ports[j].key + " has a link again." })
+  }
+  return { tracker: next, events: events }
+}
+
 if (typeof module !== "undefined") {
-  module.exports = { isIdle: isIdle, pushSample: pushSample, axisMax: axisMax, details: details, rate: rate, icon: icon, label: label, iconRole: iconRole, themeColor: themeColor, tooltip: tooltip }
+  module.exports = { trackAlerts: trackAlerts, isIdle: isIdle, pushSample: pushSample, axisMax: axisMax, details: details, rate: rate, icon: icon, label: label, iconRole: iconRole, themeColor: themeColor, tooltip: tooltip }
 }

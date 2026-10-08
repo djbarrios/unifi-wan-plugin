@@ -11,6 +11,10 @@ Gateway, …).
 - **Panel (left-click):** ISP name and state, a 60-second throughput graph,
   WAN IP, link speed of every WAN port, the last speed test result, latency
   and internet uptime.
+- **Outage alerts:** a desktop notification when internet access drops (all
+  WAN links down, or the link is up but the ISP isn't reaching the internet),
+  when one WAN of several fails over, and when things recover. Clicking the
+  notification opens the UniFi dashboard.
 
 | Input | Action |
 | --- | --- |
@@ -22,6 +26,24 @@ Gateway, …).
 
 In a vertical (left/right) bar only the status icon is shown; rates are in
 the tooltip and panel.
+
+### Outage alerts
+
+Alerts are on by default. A change has to show up in two readings in a row
+(about 5 seconds apart) before it alerts, and a WAN port that is already down
+when the widget starts, such as an unused second WAN, is never reported. No
+alerts are sent while paused, away from home, or when the gateway itself can't
+be reached.
+
+Choose *Down and recovery* (default), *Down only* or *Off* in the widget's
+settings, or from a terminal:
+
+```bash
+omarchy bar set io.github.djbarrios.unifi-wan alerts "Down only"
+```
+
+Alerts rely on the gateway's own health checks through the UniFi API, so they
+arrive as fast as the gateway notices and reports an outage.
 
 ### Pausing and other networks
 

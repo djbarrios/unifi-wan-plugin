@@ -29,8 +29,15 @@ function icon(s) {
   return s && s.state === "down" ? "󰖪" : "󰖟"
 }
 
+// Paused or away from the home network: the widget is idle and shows only a
+// dimmed icon.
+function isIdle(s) {
+  return !!s && (s.state === "paused" || s.state === "away")
+}
+
 function label(s) {
   if (!s) return "…"
+  if (isIdle(s)) return ""
   if (s.state === "error") return "?"
   if (s.state === "down") return "WAN down"
   return "↓" + rate(s.down) + " ↑" + rate(s.up)
@@ -39,6 +46,7 @@ function label(s) {
 // Green while any ISP link is carrying traffic, red when all are down.
 function iconRole(s) {
   if (!s || s.state === "error") return "neutral"
+  if (isIdle(s)) return "idle"
   return s.state === "up" ? "ok" : "bad"
 }
 
@@ -53,6 +61,8 @@ function portState(p) {
 
 function tooltip(s) {
   if (!s) return "UniFi WAN: loading…"
+  if (s.state === "paused") return "UniFi WAN: paused\n\nLeft: details · Right: open UniFi"
+  if (s.state === "away") return "UniFi WAN: not on your UniFi network"
   if (s.state === "error") return "UniFi WAN: " + s.error
   var lines = [
     "ISP: " + (s.isp || "unknown") + " — " + s.state,
@@ -101,7 +111,7 @@ function axisMax(history) {
 }
 
 function details(s) {
-  if (!s || s.state === "error") return []
+  if (!s || s.state === "error" || isIdle(s)) return []
   var rows = [
     ["ISP", (s.isp || "unknown") + " — " + s.state],
     ["WAN IP", s.wan_ip || "?"]
@@ -117,5 +127,5 @@ function details(s) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { pushSample: pushSample, axisMax: axisMax, details: details, rate: rate, icon: icon, label: label, iconRole: iconRole, themeColor: themeColor, tooltip: tooltip }
+  module.exports = { isIdle: isIdle, pushSample: pushSample, axisMax: axisMax, details: details, rate: rate, icon: icon, label: label, iconRole: iconRole, themeColor: themeColor, tooltip: tooltip }
 }

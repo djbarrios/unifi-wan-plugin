@@ -17,6 +17,9 @@ Panel {
   property var history: []
   property string themeToml: ""
   property bool refreshing: false
+  property bool pauseBusy: false
+  property bool refreshQueued: false
+  readonly property bool paused: status !== null && status.state === "paused"
   readonly property string script: Qt.resolvedUrl("unifi-wan-status").toString().replace("file://", "")
   readonly property color okColor: Model.themeColor(themeToml, "green") || "#4caf50"
   readonly property color badColor: Model.themeColor(themeToml, "red") || Color.urgent
@@ -26,8 +29,11 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // A refresh requested mid-run is queued, so a result started before a
+  // pause/resume never has the last word.
   function refresh() {
-    if (!statusProc.running) statusProc.running = true
+    if (statusProc.running) root.refreshQueued = true
+    else statusProc.running = true
   }
 
   function apply(text) {
@@ -37,7 +43,21 @@ Panel {
     } catch (e) {
       root.status = { state: "error", error: "Bad output from status script" }
     }
-    root.history = Model.pushSample(root.history, root.status, Date.now(), root.windowMs)
+    // An idle widget has no fresh data; drop the old line rather than extend it.
+    root.history = Model.isIdle(root.status) ? []
+      : Model.pushSample(root.history, root.status, Date.now(), root.windowMs)
+    if (root.refreshQueued) {
+      root.refreshQueued = false
+      Qt.callLater(root.refresh)
+    }
+  }
+
+  function setPaused(on) {
+    if (pauseProc.running) return
+    root.pauseBusy = true
+    if (on) root.apply('{"state":"paused"}')
+    pauseProc.command = [root.script, "--pause", on ? "on" : "off"]
+    pauseProc.running = true
   }
 
   function openDashboard() {
@@ -74,9 +94,18 @@ Panel {
     }
   }
 
-  // Poll faster while the graph is visible so new router samples land sooner.
+  Process {
+    id: pauseProc
+    onExited: {
+      root.pauseBusy = false
+      root.refresh()
+    }
+  }
+
+  // Poll faster while the graph is visible so new router samples land sooner;
+  // slowly when paused (only a local flag check) or away from home.
   Timer {
-    interval: root.opened ? 2000 : 5000
+    interval: Model.isIdle(root.status) ? 30000 : (root.opened ? 2000 : 5000)
     running: true
     repeat: true
     triggeredOnStart: true
@@ -123,6 +152,7 @@ Panel {
       text: Model.icon(root.status)
       fontSize: Style.font.caption
       horizontalMargin: 2
+      dimmed: root.iconRole === "idle"
       foreground: root.iconRole === "ok" ? root.okColor
                 : root.iconRole === "bad" ? root.badColor
                 : root.barForeground
@@ -160,6 +190,7 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.refresh()
+        else if (t === "p" || t === "P") root.setPaused(!root.paused)
         else if (t === "o" || t === "O") root.openDashboard()
       }
 
@@ -169,20 +200,38 @@ Panel {
         spacing: Style.space(12)
 
         PanelHero {
+          id: hero
           width: parent.width
           title: root.status && root.status.isp ? root.status.isp : "UniFi WAN"
           meta: !root.status ? "Loading…"
-              : root.status.state === "error" ? root.status.error
+              : root.status.state === "paused" ? "Paused"
+              : root.status.state === "error" || root.status.state === "away" ? root.status.error
               : root.status.state === "up" ? "Connected"
               : root.status.state === "down" ? "All WAN links down" : "WAN up, no internet"
           foreground: root.foreground
           fontFamily: root.fontFamily
+          iconOpacity: root.iconRole === "idle" ? 0.45 : 1.0
           iconComponent: Component {
             Text {
               text: Model.icon(root.status)
               color: iconButton.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.display
+            }
+          }
+          // On = monitoring. Off writes the pause flag the script checks first.
+          trailingControl: Component {
+            ToggleSwitch {
+              id: monitorSwitch
+              checked: !root.paused
+              busy: root.pauseBusy
+              foreground: hero.foreground
+              onToggled: root.setPaused(!root.paused)
+              PanelToolTip {
+                visible: monitorSwitch.containsMouse
+                text: root.paused ? "Resume monitoring (P)" : "Pause monitoring (P)"
+                fontFamily: hero.fontFamily
+              }
             }
           }
         }
@@ -198,8 +247,8 @@ Panel {
         RowLayout {
           width: parent.width
           spacing: Style.space(16)
-          Legend { swatch: root.okColor; label: "↓ Download"; value: Model.rate(root.status ? root.status.down : null) + "b/s" }
-          Legend { swatch: root.upColor; label: "↑ Upload"; value: Model.rate(root.status ? root.status.up : null) + "b/s" }
+          Legend { swatch: root.okColor; label: "↓ Download"; value: root.status && root.status.down != null ? Model.rate(root.status.down) + "b/s" : "–" }
+          Legend { swatch: root.upColor; label: "↑ Upload"; value: root.status && root.status.up != null ? Model.rate(root.status.up) + "b/s" : "–" }
           Item { Layout.fillWidth: true }
         }
 
@@ -307,7 +356,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "R refresh · O open UniFi · Esc close"
+          text: "R refresh · P pause · O open UniFi · Esc close"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dbarrios.unifi-wan",
   "name": "UniFi WAN",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "djbarrios",
   "description": "ISP status, WAN throughput graph and speed test results from a UniFi gateway",
   "kinds": [

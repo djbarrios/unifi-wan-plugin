@@ -14,6 +14,7 @@
 #          ~/.config/unifi-wan/snmp-auth/-priv protocols (default SHA / AES)
 #
 # Run with --repin after the router's certificate legitimately changes.
+# Run with --pause on|off to stop or resume all contact with the router.
 set -uo pipefail
 umask 077
 
@@ -25,7 +26,21 @@ done
 
 out() { jq -cn "$@"; exit 0; }
 
-host=$( [[ -r $conf/host ]] && tr -d '[:space:]' < "$conf/host" || ip -4 route show default | awk '{print $3; exit}')
+if [[ ${1:-} == --pause ]]; then
+  case ${2:-} in
+    on) mkdir -p "$conf" && : > "$conf/paused" ;;
+    off) rm -f "$conf/paused" ;;
+    *) echo "usage: unifi-wan-status --pause on|off" >&2; exit 2 ;;
+  esac
+  exit 0
+fi
+[[ -e $conf/paused ]] && out '{state:"paused"}'
+
+# An auto-detected host is whatever network we are on; a pin mismatch there
+# means "away from home", not "the router changed".
+host_auto=0
+host=$( [[ -r $conf/host ]] && tr -d '[:space:]' < "$conf/host")
+[[ -n $host ]] || { host_auto=1; host=$(ip -4 route show default | awk '{print $3; exit}'); }
 site=$( [[ -r $conf/site ]] && tr -d '[:space:]' < "$conf/site" || echo default)
 [[ -n $host ]] || out '{state:"error", error:"No default gateway; set the router address in ~/.config/unifi-wan/host"}'
 
@@ -56,7 +71,11 @@ if [[ ! -s $conf/pin ]]; then
   [[ ${#pin} -eq 44 && $pin != "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=" ]] \
     || out --arg h "$host" '{state:"error", error:("Router unreachable at " + $h + " (no HTTPS response)")}'
   printf 'sha256//%s\n' "$pin" > "$conf/pin"
-  [[ ${1:-} == --repin ]] && { echo "Pinned $host: sha256//$pin"; exit 0; }
+  if [[ ${1:-} == --repin ]]; then
+    echo "Pinned $host: sha256//$pin"
+    (( host_auto )) && echo "Note: $host is your current default gateway. Only re-pin while on your own network." >&2
+    exit 0
+  fi
 fi
 pin=$(tr -d '[:space:]' < "$conf/pin")
 
@@ -77,7 +96,8 @@ api() {
 health=$(api stat/health)
 case $? in
   0) ;;
-  90) out --arg h "$host" '{state:"error", error:("TLS key of " + $h + " changed. If expected, run unifi-wan-status --repin")}' ;;
+  90) (( host_auto )) && out '{state:"away", error:"Not on your UniFi network"}'
+      out --arg h "$host" '{state:"error", error:("TLS key of " + $h + " changed. If expected, run unifi-wan-status --repin")}' ;;
   *) out --arg h "$host" '{state:"error", error:("Router unreachable at " + $h)}' ;;
 esac
 jq -e 'type == "object"' <<<"$health" >/dev/null 2>&1 \

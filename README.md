@@ -17,10 +17,24 @@ Gateway, …).
 | Left-click | Open / close the panel |
 | Middle-click | Refresh now |
 | Right-click | Open the UniFi Network dashboard |
+| Switch in the panel header, or `P` | Pause / resume monitoring |
 | `R` / `O` / `Esc` in the panel | Refresh / open UniFi / close |
 
 In a vertical (left/right) bar only the status icon is shown; rates are in
 the tooltip and panel.
+
+### Pausing and other networks
+
+- **Paused:** the switch in the panel header stops all contact with the
+  gateway (no API or SNMP requests) until you turn it back on; the choice
+  survives restarts. The bar shows a dimmed icon. From a terminal:
+  `unifi-wan-status --pause on|off`.
+- **Away from home:** when the gateway address is auto-detected (no `host`
+  file) and the network's router doesn't present your pinned TLS key, the
+  widget shows a dimmed icon and *Not on your UniFi network*, sends nothing,
+  and checks again every 30 seconds. Don't run `--repin` on someone else's
+  network.
+- To remove the widget completely: `omarchy plugin disable dbarrios.unifi-wan`.
 
 ## Requirements
 
@@ -115,7 +129,9 @@ To check the setup from a terminal, run the data script directly:
   leaks.
 
 If you replace the gateway or its certificate changes (some UniFi OS updates
-do this), the widget reports that the TLS key changed. Re-pin with:
+do this), the widget reports that the TLS key changed (or, with an
+auto-detected address, that you're not on your UniFi network). While on your
+own network, re-pin with:
 
 ```bash
 ~/.config/omarchy/plugins/dbarrios.unifi-wan/unifi-wan-status --repin

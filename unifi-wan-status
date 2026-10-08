@@ -8,6 +8,11 @@
 #          ~/.config/unifi-wan/site  (optional, defaults to "default")
 #          ~/.config/unifi-wan/pin   (router TLS key pin, recorded on first contact)
 #
+# Optional live throughput over SNMPv3 (authPriv):
+#          ~/.config/unifi-wan/snmp-user       SNMPv3 username
+#          keyring "service=unifi-wan-snmp"    password (or ~/.config/unifi-wan/snmp-password)
+#          ~/.config/unifi-wan/snmp-auth/-priv protocols (default SHA / AES)
+#
 # Run with --repin after the router's certificate legitimately changes.
 set -uo pipefail
 umask 077
@@ -80,7 +85,83 @@ jq -e 'type == "object"' <<<"$health" >/dev/null 2>&1 \
 devices=$(api stat/device)
 jq -e . <<<"$devices" >/dev/null 2>&1 || devices=null
 
-jq -cn --argjson health "$health" --argjson devices "$devices" --arg host "$host" --arg site "$site" '
+# Live WAN rates from the interface counters over SNMPv3. The gateway refreshes
+# them about every 5s, so a rate is taken across the counter changes seen in
+# the last ~15s instead of between two adjacent polls (which would alternate
+# between zero and double). Prints {"<ifname>": {down, up}} in Mbps, or fails.
+snmp_rates() {
+  local user=$1 pass=$2 rt state cfg now names idx oids raw
+  rt="${XDG_RUNTIME_DIR:-/tmp}/unifi-wan-$UID"
+  mkdir -p -m 700 "$rt" || return 1
+  state="$rt/snmp-$host.json"
+  cfg=$(mktemp -d "$rt/snmp.XXXXXX") || return 1
+  trap 'rm -rf "$cfg"' RETURN
+  # The passphrase goes in a private config file, never on the command line.
+  printf 'defVersion 3\ndefSecurityName %s\ndefSecurityLevel authPriv\ndefAuthType %s\ndefAuthPassphrase %s\ndefPrivType %s\ndefPrivPassphrase %s\n' \
+    "$user" "$(cat "$conf/snmp-auth" 2>/dev/null || echo SHA)" "$pass" \
+    "$(cat "$conf/snmp-priv" 2>/dev/null || echo AES)" "$pass" > "$cfg/snmp.conf"
+  snmp() { local cmd=$1; shift; SNMPCONFPATH=$cfg "$cmd" -r 0 -t 2 -Oqn "$host" "$@" 2>/dev/null; }
+
+  names=$(jq -r '[.data[]? | select(.type == "udm" or .type == "ugw" or .type == "uxg")][0] // {}
+                 | to_entries[] | select(.key | test("^wan[0-9]+$")) | .value.name // empty' <<<"$devices")
+  [[ -n $names ]] || return 1
+
+  exec {lock}>"$state.lock"; flock -w 3 "$lock" || return 1
+  [[ -s $state ]] || echo '{}' > "$state"
+
+  # Map interface names to SNMP ifIndex once; refresh when a WAN name is unknown.
+  if ! jq -e --arg n "$names" '($n | split("\n")) - (.ifmap // {} | keys) | length == 0' "$state" >/dev/null; then
+    raw=$(snmp snmpwalk .1.3.6.1.2.1.31.1.1.1.1) || return 1
+    jq --arg raw "$raw" '.ifmap = ($raw | split("\n") | map(select(length > 0) | split(" ")
+          | {key: .[1], value: (.[0] | split(".") | last)}) | from_entries)' "$state" > "$state.tmp" \
+      && mv "$state.tmp" "$state"
+  fi
+
+  oids=$(jq -r --arg n "$names" '.ifmap as $m | $n | split("\n")[] | $m[.] // empty
+          | ".1.3.6.1.2.1.31.1.1.1.6.\(.) .1.3.6.1.2.1.31.1.1.1.10.\(.)"' "$state")
+  [[ -n $oids ]] || return 1
+  # shellcheck disable=SC2086
+  raw=$(snmp snmpget $oids) || return 1
+  now=$(date +%s.%N)
+
+  jq --arg raw "$raw" --argjson now "$now" --arg n "$names" '
+    (.ifmap | to_entries | map({key: .value, value: .key}) | from_entries) as $byidx
+    | ($raw | split("\n") | map(select(length > 0) | split(" ")
+        | {idx: (.[0] | split(".") | last), dir: (.[0] | split(".") | .[-2]), v: (.[1] | tonumber)})
+        | group_by(.idx) | map({key: $byidx[.[0].idx],
+            value: {in: (map(select(.dir == "6"))[0].v), out: (map(select(.dir == "10"))[0].v)}})
+        | from_entries) as $cur
+    | .pts = (reduce ($cur | to_entries[]) as $e (.pts // {};
+        (.[$e.key] // []) as $p
+        | if ($p | length) > 0 and ($e.value.in < $p[-1][1] or $e.value.out < $p[-1][2]) then
+            .[$e.key] = [[$now, $e.value.in, $e.value.out]]
+          elif ($p | length) == 0 or $p[-1][1] != $e.value.in or $p[-1][2] != $e.value.out then
+            .[$e.key] = ($p + [[$now, $e.value.in, $e.value.out]])
+          else . end
+        | .[$e.key] |= (until(length <= 2 or .[1][0] > $now - 16; .[1:]))))
+  ' "$state" > "$state.tmp" && mv "$state.tmp" "$state" || return 1
+
+  jq -c --argjson now "$now" '.pts | with_entries(.value |= (
+      if length < 2 then null
+      elif $now - .[-1][0] > 12 then {down: 0, up: 0}
+      else (.[-1][0] - .[0][0]) as $dt
+        | {down: ((.[-1][1] - .[0][1]) * 8 / $dt / 1000 | round / 1000),
+           up:   ((.[-1][2] - .[0][2]) * 8 / $dt / 1000 | round / 1000)} end))
+    | with_entries(select(.value != null))' "$state"
+}
+
+snmp=null
+snmp_user=$(tr -d '[:space:]' < "$conf/snmp-user" 2>/dev/null)
+if [[ -n $snmp_user ]] && command -v snmpget >/dev/null; then
+  snmp_pass=$(secret-tool lookup service unifi-wan-snmp 2>/dev/null)
+  [[ -z $snmp_pass && -r $conf/snmp-password ]] && snmp_pass=$(< "$conf/snmp-password")
+  snmp_pass=${snmp_pass%$'\n'}
+  if [[ -n $snmp_pass ]]; then
+    snmp=$(snmp_rates "$snmp_user" "$snmp_pass") && jq -e 'type == "object" and length > 0' <<<"$snmp" >/dev/null 2>&1 || snmp=null
+  fi
+fi
+
+jq -cn --argjson health "$health" --argjson devices "$devices" --argjson snmp "$snmp" --arg host "$host" --arg site "$site" '
   def sub($n): ($health.data // [] | map(select(.subsystem == $n)) | first) // {};
   def mbps: if . == null then null else (. * 8 / 1000 | round / 1000) end;
   def wanport($w): if $w == null then null else
@@ -114,4 +195,13 @@ jq -cn --argjson health "$health" --argjson devices "$devices" --arg host "$host
              | sort_by(.key | ltrimstr("wan") | tonumber)
              | map(wanport(.value) + {port: (.key | ascii_upcase)}))
     }
+    # Prefer live SNMP rates; totals cover the WAN ports that are up.
+    | if $snmp == null then . + {source: "api"} else
+        .wans |= map(if $snmp[.name] then .down = $snmp[.name].down | .upl = $snmp[.name].up else . end)
+        | [.wans[] | select(.up and $snmp[.name] != null)] as $live
+        | if ($live | length) == 0 then . + {source: "api"} else
+            .down = ($live | map(.down) | add * 1000 | round / 1000)
+            | .up = ($live | map(.upl) | add * 1000 | round / 1000)
+            | .source = "snmp" end
+      end
   end' 2>/dev/null || out '{state:"error", error:"Unexpected API response"}'

@@ -1,5 +1,6 @@
 function rate(mbps) {
   if (mbps === null || mbps === undefined) return "–"
+  if (mbps === 0) return "0"
   if (mbps >= 1000) return (mbps / 1000).toFixed(2) + "G"
   if (mbps >= 100) return Math.round(mbps) + "M"
   if (mbps >= 1) return mbps.toFixed(1) + "M"
@@ -107,6 +108,7 @@ function details(s) {
   ]
   var wans = s.wans || []
   for (var i = 0; i < wans.length; i++) rows.push([wans[i].port, portState(wans[i])])
+  rows.push(["Rates", s.source === "snmp" ? "live via SNMP" : "router stats (can lag)"])
   if (s.test_down || s.test_up)
     rows.push(["Speed test", "↓ " + Math.round(s.test_down || 0) + " / ↑ " + Math.round(s.test_up || 0) + " Mbps (" + ago(s.test_at) + ")"])
   if (s.latency) rows.push(["Latency", s.latency + " ms"])

@@ -209,7 +209,6 @@ Panel {
           height: Style.space(120)
 
           readonly property real yMax: Model.axisMax(root.history)
-          readonly property real labelGutter: Style.space(34)
 
           onYMaxChanged: requestPaint()
           Connections {
@@ -221,19 +220,22 @@ Panel {
           onPaint: {
             var ctx = getContext("2d")
             ctx.reset()
-            var left = labelGutter, top = 4, right = width, bottom = height - Style.space(14)
+            ctx.font = Style.font.caption + "px '" + root.fontFamily + "'"
+            var ticks = [0, 0.5, 1]
+            var gutter = 0
+            for (var g = 0; g < ticks.length; g++)
+              gutter = Math.max(gutter, ctx.measureText(Model.rate(yMax * ticks[g])).width)
+            var left = Math.ceil(gutter) + Style.space(8), top = Style.font.caption, right = width, bottom = height - Style.space(14)
             var w = right - left, h = bottom - top
             var now = Date.now(), start = now - root.windowMs
 
             function xAt(t) { return left + Math.max(0, (t - start) / root.windowMs) * w }
             function yAt(v) { return bottom - Math.min(1, v / yMax) * h }
 
-            ctx.font = Style.font.caption + "px '" + root.fontFamily + "'"
             ctx.textBaseline = "middle"
             ctx.lineWidth = 1
             ctx.strokeStyle = Qt.alpha(root.foreground, 0.12)
             ctx.fillStyle = root.dim
-            var ticks = [0, 0.5, 1]
             for (var i = 0; i < ticks.length; i++) {
               var y = Math.round(yAt(yMax * ticks[i])) + 0.5
               ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke()
